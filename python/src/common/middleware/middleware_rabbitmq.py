@@ -26,9 +26,8 @@ class RabbitMQConnectionManager:
                 self.connection = pika.BlockingConnection(pika.ConnectionParameters(host=self.host))
                 self.channel = self.connection.channel()
                 return
-            except Exception as exc:
-                last_exception = exc
-                self.close()
+            except Exception:
+                pass
 
         raise MessageMiddlewareDisconnectedError(f"No se pudo conectar con RabbitMQ en host {self.host}") from last_exception
 
@@ -36,10 +35,8 @@ class RabbitMQConnectionManager:
         try:
             if self.connection is not None and self.connection.is_open:
                 self.connection.close()
-        except Exception:
-            pass
-
-        self.connection = None
+        finally:
+            self.connection = None
 
     def raise_for_connection_error(self, exc):
         if isinstance(
@@ -76,8 +73,6 @@ class MessageMiddlewareQueueRabbitMQ(MessageMiddlewareQueue):
             if isinstance(exc, (MessageMiddlewareDisconnectedError, MessageMiddlewareMessageError)):
                 raise
             self.conn.raise_for_connection_error(exc)
-        finally:
-            self.close()
 
     def stop_consuming(self):
         if self.conn.channel is None:
@@ -145,8 +140,6 @@ class MessageMiddlewareExchangeRabbitMQ(MessageMiddlewareExchange):
             if isinstance(exc, (MessageMiddlewareDisconnectedError, MessageMiddlewareMessageError)):
                 raise
             self.conn.raise_for_connection_error(exc)
-        finally:
-            self.close()
 
     def stop_consuming(self):
         if self.conn.channel is None:
