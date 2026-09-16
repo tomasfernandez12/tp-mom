@@ -9,7 +9,6 @@ from .middleware import (
     MessageMiddlewareQueue,
 )
 
-
 class RabbitMQConnectionManager:
 
     def __init__(self, host):
@@ -32,11 +31,8 @@ class RabbitMQConnectionManager:
             except Exception as exc:
                 last_exception = exc
                 self.close()
-                time.sleep(0.5)
 
-        raise MessageMiddlewareDisconnectedError(
-            f"No se pudo conectar con RabbitMQ en host {self.host}"
-        ) from last_exception
+        raise MessageMiddlewareDisconnectedError(f"No se pudo conectar con RabbitMQ en host {self.host}") from last_exception
 
     def close(self):
         try:
@@ -81,7 +77,7 @@ class MessageMiddlewareQueueRabbitMQ(MessageMiddlewareQueue):
 
         try:
             self.conn.connect()
-            self.conn.channel.queue_declare(queue=self.queue_name,durable=False,exclusive=False,auto_delete=False,)
+            self.conn.channel.queue_declare(queue=self.queue_name,durable=True,auto_delete=False,)
             self.conn.channel.basic_qos(prefetch_count=1)
             self.conn.channel.basic_consume(queue=self.queue_name,on_message_callback=self.on_message,auto_ack=False,)
             self.conn.channel.start_consuming()
@@ -103,9 +99,8 @@ class MessageMiddlewareQueueRabbitMQ(MessageMiddlewareQueue):
     def send(self, message):
         try:
             self.conn.connect()
-            self.conn.channel.queue_declare(queue=self.queue_name,durable=False,exclusive=False,auto_delete=False,)
+            self.conn.channel.queue_declare(queue=self.queue_name,durable=True,auto_delete=False,)
             self.conn.channel.basic_publish(exchange="",routing_key=self.queue_name,body=message,)
-            self.conn.connection.process_data_events(time_limit=0)
         except Exception as exc:
             if isinstance(exc, (MessageMiddlewareDisconnectedError, MessageMiddlewareMessageError)):
                 raise
@@ -134,4 +129,68 @@ class MessageMiddlewareQueueRabbitMQ(MessageMiddlewareQueue):
 class MessageMiddlewareExchangeRabbitMQ(MessageMiddlewareExchange):
 
     def __init__(self, host, exchange_name, routing_keys):
-        pass
+        self.host = host
+        self._exchange_name = exchange_name
+        self._routing_keys = routing_keys
+        self.conn = RabbitMQConnectionManager(host)
+        self.message_callback = None
+        self.queue_name = f"{exchange_name}_queue_{time.time_ns()}"
+
+    def start_consuming(self, on_message_callback):
+        self.message_callback = on_message_callback
+
+        try:
+            self.conn.connect()
+            self.conn.channel.exchange_declare(exchange=self._exchange_name,exchange_type="direct",durable=True,auto_delete=False,)
+            self.conn.channel.queue_declare(queue=self.queue_name,durable=True,exclusive=True,auto_delete=True,)
+
+            for routing_key in self._routing_keys:
+                self.conn.channel.queue_bind(exchange=self._exchange_name,queue=self.queue_name,routing_key=routing_key,)
+
+            self.conn.channel.basic_qos(prefetch_count=1)
+            self.conn.channel.basic_consume(queue=self.queue_name,on_message_callback=self.on_message,auto_ack=False,)
+            self.conn.channel.start_consuming()
+        except Exception as exc:
+            if isinstance(exc, (MessageMiddlewareDisconnectedError, MessageMiddlewareMessageError)):
+                raise
+            self.conn.raise_for_connection_error(exc)
+        finally:
+            self.close()
+
+    def stop_consuming(self):
+        if self.conn.channel is None:
+            return
+        try:
+            self.conn.channel.stop_consuming()
+        except Exception as exc:
+            raise MessageMiddlewareDisconnectedError(str(exc)) from exc
+
+    def send(self, message):
+        try:
+            self.conn.connect()
+            self.conn.channel.exchange_declare(exchange=self._exchange_name,exchange_type="direct",durable=True,auto_delete=False,)
+            routing_key = self._routing_keys[0] if self._routing_keys else ""
+            self.conn.channel.basic_publish(exchange=self._exchange_name,routing_key=routing_key,body=message,)
+        except Exception as exc:
+            if isinstance(exc, (MessageMiddlewareDisconnectedError, MessageMiddlewareMessageError)):
+                raise
+            self.conn.raise_for_connection_error(exc)
+
+    def close(self):
+        try:
+            self.conn.close()
+        except Exception as exc:
+            raise MessageMiddlewareCloseError(str(exc)) from exc
+
+    def on_message(self, channel, method, properties, body):
+        ack = lambda: channel.basic_ack(delivery_tag=method.delivery_tag)
+        nack = lambda: channel.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
+
+        try:
+            self.message_callback(body, ack, nack)
+        except Exception as exc:
+            try:
+                channel.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+            except Exception:
+                pass
+            raise MessageMiddlewareMessageError(str(exc)) from exc
