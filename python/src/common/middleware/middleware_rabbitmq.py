@@ -23,9 +23,7 @@ class RabbitMQConnectionManager:
         last_exception = None
         for _ in range(10):
             try:
-                self.connection = pika.BlockingConnection(
-                    pika.ConnectionParameters(host=self.host)
-                )
+                self.connection = pika.BlockingConnection(pika.ConnectionParameters(host=self.host))
                 self.channel = self.connection.channel()
                 return
             except Exception as exc:
@@ -36,18 +34,11 @@ class RabbitMQConnectionManager:
 
     def close(self):
         try:
-            if self.channel is not None and self.channel.is_open:
-                self.channel.close()
-        except Exception:
-            pass
-
-        try:
             if self.connection is not None and self.connection.is_open:
                 self.connection.close()
         except Exception:
             pass
 
-        self.channel = None
         self.connection = None
 
     def raise_for_connection_error(self, exc):
@@ -77,7 +68,7 @@ class MessageMiddlewareQueueRabbitMQ(MessageMiddlewareQueue):
 
         try:
             self.conn.connect()
-            self.conn.channel.queue_declare(queue=self.queue_name,durable=True,auto_delete=False,)
+            self.conn.channel.queue_declare(queue=self.queue_name,durable=True,auto_delete=True,)
             self.conn.channel.basic_qos(prefetch_count=1)
             self.conn.channel.basic_consume(queue=self.queue_name,on_message_callback=self.on_message,auto_ack=False,)
             self.conn.channel.start_consuming()
@@ -99,7 +90,7 @@ class MessageMiddlewareQueueRabbitMQ(MessageMiddlewareQueue):
     def send(self, message):
         try:
             self.conn.connect()
-            self.conn.channel.queue_declare(queue=self.queue_name,durable=True,auto_delete=False,)
+            self.conn.channel.queue_declare(queue=self.queue_name,durable=True,auto_delete=True,)
             self.conn.channel.basic_publish(exchange="",routing_key=self.queue_name,body=message,)
         except Exception as exc:
             if isinstance(exc, (MessageMiddlewareDisconnectedError, MessageMiddlewareMessageError)):
@@ -130,7 +121,7 @@ class MessageMiddlewareExchangeRabbitMQ(MessageMiddlewareExchange):
 
     def __init__(self, host, exchange_name, routing_keys):
         self.host = host
-        self._exchange_name = exchange_name
+        self.exchange_name = exchange_name
         self._routing_keys = routing_keys
         self.conn = RabbitMQConnectionManager(host)
         self.message_callback = None
@@ -141,11 +132,11 @@ class MessageMiddlewareExchangeRabbitMQ(MessageMiddlewareExchange):
 
         try:
             self.conn.connect()
-            self.conn.channel.exchange_declare(exchange=self._exchange_name,exchange_type="direct",durable=True,auto_delete=False,)
-            self.conn.channel.queue_declare(queue=self.queue_name,durable=True,exclusive=True,auto_delete=True,)
+            self.conn.channel.exchange_declare(exchange=self.exchange_name,exchange_type="direct",durable=True,auto_delete=True,)
+            self.conn.channel.queue_declare(queue=self.queue_name,durable=True,auto_delete=True,)
 
             for routing_key in self._routing_keys:
-                self.conn.channel.queue_bind(exchange=self._exchange_name,queue=self.queue_name,routing_key=routing_key,)
+                self.conn.channel.queue_bind(exchange=self.exchange_name,queue=self.queue_name,routing_key=routing_key,)
 
             self.conn.channel.basic_qos(prefetch_count=1)
             self.conn.channel.basic_consume(queue=self.queue_name,on_message_callback=self.on_message,auto_ack=False,)
@@ -168,9 +159,9 @@ class MessageMiddlewareExchangeRabbitMQ(MessageMiddlewareExchange):
     def send(self, message):
         try:
             self.conn.connect()
-            self.conn.channel.exchange_declare(exchange=self._exchange_name,exchange_type="direct",durable=True,auto_delete=False,)
+            self.conn.channel.exchange_declare(exchange=self.exchange_name,exchange_type="direct",durable=True,auto_delete=True,)
             routing_key = self._routing_keys[0] if self._routing_keys else ""
-            self.conn.channel.basic_publish(exchange=self._exchange_name,routing_key=routing_key,body=message,)
+            self.conn.channel.basic_publish(exchange=self.exchange_name,routing_key=routing_key,body=message,)
         except Exception as exc:
             if isinstance(exc, (MessageMiddlewareDisconnectedError, MessageMiddlewareMessageError)):
                 raise
